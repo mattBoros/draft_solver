@@ -17,8 +17,8 @@ typedef int_fast32_t T_INT;
 
 const bool ASSERT = false;
 const uint8_t MAX_DEPTH = 16;
-const uint16_t CACHE_DEPTH_CHECK = 4;
-const uint32_t CACHE_BUCKETS = 10000;
+const uint16_t CACHE_DEPTH_CHECK = 6;
+const uint32_t CACHE_BUCKETS = 1000;
 const uint32_t MAX_CACHE_SIZE = 1000000;
 
 
@@ -367,10 +367,28 @@ struct CacheEntry {
         }
         return 1 + next->num_entries();
     }
+
+    CacheEntry* get_end(){
+        if(next == nullptr){
+            return this;
+        }
+        return next->get_end();
+    }
 };
 
 struct Cache {
     CacheEntry *cache_[CACHE_BUCKETS] = {nullptr};
+
+    void add_cache(Cache* other){
+        for (int i = 0; i < CACHE_BUCKETS; ++i) {
+            if(cache_[i] == nullptr){
+                cache_[i] = other->cache_[i];
+            } else {
+                CacheEntry* last = cache_[i]->get_end();
+                last->next = other->cache_[i];
+            }
+        }
+    }
 
     // this assumes gs is not in the cache
     void put(const GameState *gs, const GameResult *gr) {
@@ -693,6 +711,207 @@ void minmaxkinda(const GameState *state, GameResult *result, Cache* cache, std::
     }
 }
 
+
+template<const bool backtrace, const uint8_t depth>
+void minmaxkinda_1depth(const GameState *state, GameResult *result, Cache* cache, std::ofstream* myfile) {
+    NUM_STATES_EVALUATED++;
+    if (ASSERT) {
+        for (uint_fast8_t i = 0; i < 10; ++i) {
+            const PlayerState *ps = &state->player_states_[i];
+            assert_something(ps->num_players() < TEAM_SIZE, 54353222);
+        }
+    }
+
+    if (depth == CACHE_DEPTH_CHECK && !backtrace) {
+        CACHE_CHECKS++;
+        bool b = false;
+        cache->get(state, result, &b);
+        if (b) {
+//            std::cout << "CACHE USED" << std::endl;
+//            state->print();
+            CACHE_HITS++;
+            return;
+        }
+    }
+
+    if (depth >= MAX_DEPTH) {
+        heuristic<depth>(state, result);
+        return;
+    }
+    constexpr uint8_t next_depth = get_next_depth(depth);
+
+    const T_INT player_index = SNAKE_ORDER[depth % 20];
+    const PlayerState *current_player = &state->player_states_[player_index];
+
+    GameResult pick_QB_score{};
+    GameState qb_state{};
+    std::thread QB_thread;
+    bool QB_thread_used = false;
+    Cache QB_cache{};
+    if (current_player->num_QBs() < MAX_QB) {
+        if (backtrace && depth == 0) {
+            std::cout << "in QB depth=" << (int) depth << std::endl;
+            (*myfile) << "in QB depth=" << (int) depth << std::endl;
+        }
+        qb_state.assign(state);
+        const T_INT next_QB = state->num_QBs_taken_;
+        qb_state.player_states_[player_index].sum_ += QB_POINTS[next_QB];
+        qb_state.player_states_[player_index].add_to_position<QB>();
+        qb_state.num_QBs_taken_++;
+
+        QB_thread = std::thread(minmaxkinda<false, next_depth>, &qb_state, &pick_QB_score, &QB_cache, myfile);
+        QB_thread_used = true;
+    } else {
+        pick_QB_score.player_sums[player_index] = -100;
+    }
+
+
+    GameResult pick_RB_score{};
+    GameState rb_state{};
+    std::thread RB_thread;
+    bool RB_thread_used = false;
+    Cache RB_cache{};
+    if (current_player->num_RBs() < MAX_RB || current_player->flex_open()) {
+        if (backtrace && depth == 0) {
+            std::cout << "in RB depth=" << (int) depth << std::endl;
+            (*myfile) << "in RB depth=" << (int) depth << std::endl;
+        }
+        rb_state.assign(state);
+        const T_INT next_RB = state->num_RBs_taken_;
+        rb_state.player_states_[player_index].sum_ += RB_POINTS[next_RB];
+        rb_state.player_states_[player_index].add_to_position<RB>();
+        rb_state.num_RBs_taken_++;
+        RB_thread = std::thread(minmaxkinda<false, next_depth>, &rb_state, &pick_RB_score, &RB_cache, myfile);
+        RB_thread_used = true;
+    } else {
+        pick_RB_score.player_sums[player_index] = -100;
+    }
+
+
+
+    GameResult pick_WR_score{};
+    GameState wr_state{};
+    std::thread WR_thread;
+    bool WR_thread_used = false;
+    Cache WR_cache{};
+    if (current_player->num_WRs() < MAX_WR || current_player->flex_open()) {
+        if (backtrace && depth == 0) {
+            std::cout << "in WR depth=" << (int) depth << std::endl;
+            (*myfile) << "in WR depth=" << (int) depth << std::endl;
+        }
+        wr_state.assign(state);
+        const T_INT next_WR = state->num_WRs_taken_;
+        wr_state.player_states_[player_index].sum_ += WR_POINTS[next_WR];
+        wr_state.player_states_[player_index].add_to_position<WR>();
+        wr_state.num_WRs_taken_++;
+
+
+        WR_thread = std::thread(minmaxkinda<false, next_depth>, &wr_state, &pick_WR_score, &WR_cache, myfile);
+        WR_thread_used = true;
+    } else {
+        pick_WR_score.player_sums[player_index] = -100;
+    }
+
+
+    GameResult pick_TE_score{};
+    GameState te_state{};
+    std::thread TE_thread;
+    bool TE_thread_used = false;
+    Cache TE_cache{};
+    if (current_player->num_TEs() < MAX_TE || current_player->flex_open()) {
+        if (backtrace && depth == 0) {
+            std::cout << "in TE depth=" << (int) depth << std::endl;
+            (*myfile) << "in TE depth=" << (int) depth << std::endl;
+        }
+//        te_state = state.copy();
+        te_state.assign(state);
+
+        const T_INT next_TE = state->num_TEs_taken_;
+        te_state.player_states_[player_index].sum_ += TE_POINTS[next_TE];
+//        std::cout << "adding TE in first minmax thing" << std::endl;
+        te_state.player_states_[player_index].add_to_position<TE>();
+        te_state.num_TEs_taken_++;
+
+        TE_thread = std::thread(minmaxkinda<false, next_depth>, &te_state, &pick_TE_score, &TE_cache, myfile);
+        TE_thread_used = true;
+    } else {
+        pick_TE_score.player_sums[player_index] = -100;
+    }
+
+    if(QB_thread_used){
+        QB_thread.join();
+        cache->add_cache(&QB_cache);
+    }
+    if(RB_thread_used){
+        RB_thread.join();
+        cache->add_cache(&RB_cache);
+    }
+    if(WR_thread_used){
+        WR_thread.join();
+        cache->add_cache(&WR_cache);
+    }
+    if(TE_thread_used){
+        TE_thread.join();
+        cache->add_cache(&TE_cache);
+    }
+
+    pick_QB_score.position_chosen = QB;
+    pick_RB_score.position_chosen = RB;
+    pick_WR_score.position_chosen = WR;
+    pick_TE_score.position_chosen = TE;
+
+
+    GameResult temp_result1{};
+    if (pick_QB_score.player_sums[player_index] > pick_RB_score.player_sums[player_index]) {
+        temp_result1 = pick_QB_score;
+    } else {
+        temp_result1 = pick_RB_score;
+    }
+
+    GameResult temp_result2{};
+    if (pick_WR_score.player_sums[player_index] > pick_TE_score.player_sums[player_index]) {
+        temp_result2 = pick_WR_score;
+    } else {
+        temp_result2 = pick_TE_score;
+    }
+
+    GameResult winning_move{};
+    if (temp_result1.player_sums[player_index] > temp_result2.player_sums[player_index]) {
+        winning_move = temp_result1;
+    } else {
+        winning_move = temp_result2;
+    }
+
+    if (backtrace) {
+        print_position(winning_move.position_chosen, myfile);
+        GameState winning_state{};
+        if (winning_move.position_chosen == QB) {
+            winning_state.assign(&qb_state);
+        } else if (winning_move.position_chosen == RB) {
+            winning_state.assign(&rb_state);
+        } else if (winning_move.position_chosen == WR) {
+            winning_state.assign(&wr_state);
+        } else if (winning_move.position_chosen == TE) {
+            winning_state.assign(&te_state);
+        }
+
+//        qb_state.print();
+//        rb_state.print();
+//        wr_state.print();
+//        te_state.print();
+//        winning_state.print();
+//        std::cout << "here" << std::endl;
+
+        GameResult temp{};
+        minmaxkinda<true, next_depth>(&winning_state, &temp, cache, myfile);
+    }
+
+    result->assign(&winning_move);
+    if (depth == CACHE_DEPTH_CHECK && !backtrace) {
+        cache->put(state, result);
+    }
+}
+
 template<const bool backtrace, const uint8_t depth>
 void minmaxkinda_0depth(const GameState *state, GameResult *result, std::ofstream* myfile) {
     NUM_STATES_EVALUATED++;
@@ -737,7 +956,7 @@ void minmaxkinda_0depth(const GameState *state, GameResult *result, std::ofstrea
     qb_state.player_states_[player_index].sum_ += QB_POINTS[next_QB];
     qb_state.player_states_[player_index].add_to_position<QB>();
     qb_state.num_QBs_taken_++;
-    std::thread QB_thread(minmaxkinda<false, next_depth>, &qb_state, &pick_QB_score, &QB_cache, myfile);
+    std::thread QB_thread(minmaxkinda_1depth<false, next_depth>, &qb_state, &pick_QB_score, &QB_cache, myfile);
 
 
     GameResult pick_RB_score{};
@@ -752,7 +971,7 @@ void minmaxkinda_0depth(const GameState *state, GameResult *result, std::ofstrea
     rb_state.player_states_[player_index].sum_ += RB_POINTS[next_RB];
     rb_state.player_states_[player_index].add_to_position<RB>();
     rb_state.num_RBs_taken_++;
-    std::thread RB_thread(minmaxkinda<false, next_depth>, &rb_state, &pick_RB_score, &RB_cache, myfile);
+    std::thread RB_thread(minmaxkinda_1depth<false, next_depth>, &rb_state, &pick_RB_score, &RB_cache, myfile);
 
 
     GameResult pick_WR_score{};
@@ -767,7 +986,7 @@ void minmaxkinda_0depth(const GameState *state, GameResult *result, std::ofstrea
     wr_state.player_states_[player_index].sum_ += WR_POINTS[next_WR];
     wr_state.player_states_[player_index].add_to_position<WR>();
     wr_state.num_WRs_taken_++;
-    std::thread WR_thread(minmaxkinda<false, next_depth>, &wr_state, &pick_WR_score, &WR_cache, myfile);
+    std::thread WR_thread(minmaxkinda_1depth<false, next_depth>, &wr_state, &pick_WR_score, &WR_cache, myfile);
 
 
     GameResult pick_TE_score{};
@@ -785,7 +1004,7 @@ void minmaxkinda_0depth(const GameState *state, GameResult *result, std::ofstrea
 //        std::cout << "adding TE in first minmax thing" << std::endl;
     te_state.player_states_[player_index].add_to_position<TE>();
     te_state.num_TEs_taken_++;
-    std::thread TE_thread(minmaxkinda<false, next_depth>, &te_state, &pick_TE_score, &TE_cache, myfile);
+    std::thread TE_thread(minmaxkinda_1depth<false, next_depth>, &te_state, &pick_TE_score, &TE_cache, myfile);
 
 
     QB_thread.join();
@@ -831,20 +1050,19 @@ void minmaxkinda_0depth(const GameState *state, GameResult *result, std::ofstrea
     if (backtrace) {
         print_position(winning_move.position_chosen, myfile);
         GameState winning_state{};
-        Cache* winning_cache = nullptr;
         if (winning_move.position_chosen == QB) {
             winning_state.assign(&qb_state);
-            winning_cache = &QB_cache;
         } else if (winning_move.position_chosen == RB) {
             winning_state.assign(&rb_state);
-            winning_cache = &RB_cache;
         } else if (winning_move.position_chosen == WR) {
             winning_state.assign(&wr_state);
-            winning_cache = &WR_cache;
         } else if (winning_move.position_chosen == TE) {
             winning_state.assign(&te_state);
-            winning_cache = &TE_cache;
         }
+
+        QB_cache.add_cache(&RB_cache);
+        QB_cache.add_cache(&WR_cache);
+        QB_cache.add_cache(&TE_cache);
 
 //        qb_state.print();
 //        rb_state.print();
@@ -854,7 +1072,7 @@ void minmaxkinda_0depth(const GameState *state, GameResult *result, std::ofstrea
 //        std::cout << "here" << std::endl;
 
         GameResult temp{};
-        minmaxkinda<true, next_depth>(&winning_state, &temp, winning_cache, myfile);
+        minmaxkinda<true, next_depth>(&winning_state, &temp, &QB_cache, myfile);
     }
 
     result->assign(&winning_move);
