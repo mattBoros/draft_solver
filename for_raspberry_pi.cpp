@@ -15,7 +15,7 @@ double get_time(){
 
 typedef int_fast32_t T_INT;
 
-const bool ASSERT = true;
+const bool ASSERT = false;
 const uint8_t MAX_DEPTH = 14;
 const uint16_t CACHE_DEPTH_CHECK = 4;
 const uint32_t CACHE_BUCKETS = 10000;
